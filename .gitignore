@@ -1,0 +1,38 @@
+# Rust 빌드 산출물
+/target/
+**/*.rs.bk
+
+# 커버리지, 프로파일링
+*.profraw
+*.profdata
+/coverage/
+/tarpaulin-report.html
+lcov.info
+
+# Claude Code 로컬 설정 (.claude/agents, .claude/skills 는 커밋한다)
+.claude/settings.local.json
+.claude/scratch/
+
+# 에디터, IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 로그, 임시 파일
+*.log
+*.tmp
+
+# 환경변수, 비밀 정보
+.env
+.env.*
+!.env.example
+
+# 개발 중 사용하는 로컬 ph 저장소 (테스트용 PH_HOME 등)
+/.ph-test/
