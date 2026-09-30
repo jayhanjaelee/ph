@@ -2,6 +2,8 @@
 
 `ph` (Prompt Hub) 는 AI Agent 용 prompt 저장소 CLI 프로그램이다. Rust 로 작성하고, 기본은 TUI 이며 CLI 와 Claude skill 로도 동작한다.
 
+이름: 배포 패키지(crate)는 `prompt-hub`, 실행 파일은 `ph` 다.
+
 ## 참조 문서
 
 - 상세 스펙: [SPEC.md](SPEC.md) — 모든 구현은 이 문서를 기준으로 한다. 스펙과 구현이 다르면 먼저 스펙 변경을 제안한다.
