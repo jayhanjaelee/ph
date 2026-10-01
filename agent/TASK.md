@@ -19,6 +19,7 @@
 - 지원 OS: v0.1 은 Linux, macOS. Windows 는 미지원이나 확장 가능하게 설계 (OS 종속 코드는 `platform/` 에 격리, SPEC 6절 이식성 규칙) (2026-09-30 사용자 확정)
 - TUI 편집: 인라인 에디터(`e`)와 외부 에디터 호출(`E`) 두 방식 모두 지원 (2026-09-30 사용자 확정, SPEC 5.1절)
 - id(파일명) 규칙: 한글은 그대로, 영문도 대소문자 그대로, 공백만 `-` 로 치환. 예: `코드 리뷰` → `코드-리뷰.md` (2026-09-30 사용자 확정, SPEC 2절)
+- 이름: 배포 패키지(crate) `prompt-hub`, 바이너리 `ph` (2026-09-30 사용자 확정). crates.io 에서 `ph`, `prompthub`, `ph-cli` 는 이미 사용 중이고 `prompt-hub` 는 비어 있음을 확인함
 - 라이선스: MIT, 저작권자 Hanjae Lee (2026-09-30 사용자 확정, 루트 `LICENSE`)
 - 저장 형식: Markdown + TOML frontmatter
 
@@ -28,11 +29,11 @@
 - 알려진 동작: 한 scope 의 깨진 파일 에러는 다른 scope 에 정상 항목이 있어도 get 에서 전파됨(우회: --global/--local)
 
 ## 미결정 (SPEC.md 10절)
-- [ ] 배포 방식
+- [ ] 배포 방식 (패키지 이름은 확정. 채널은 GitHub Release + `cargo install` 제안)
 
 ## M0. 골격과 core
 - [x] (architect) crate 구조와 의존 방향 확정, `docs/ARCHITECTURE.md` 작성
-- [x] (coder) `cargo init`, 모듈 골격 생성 (`Cargo.toml` 에 license, authors 설정: SPEC 8절 라이선스)
+- [x] (coder) `cargo init`, 모듈 골격 생성 (`Cargo.toml`: package name `prompt-hub`, `[[bin]] name = "ph"`, license, authors. SPEC 8절 라이선스)
 - [x] (coder) `platform` 모듈 (`paths`, `fs` atomic write, `editor`)
 - [x] (coder) `core::model`, `core::error`, id 검증 규칙(SPEC 2절)
 - [x] (qa) 이식성 검증: id 규칙(예약어, 대소문자, NFC), CRLF/BOM 파싱, OS 종속 코드가 `platform/` 밖에 없는지 grep 점검
@@ -78,3 +79,4 @@
 | 2026-09-30 | coder | M1 구현: clap CLI(init/add/get/list/search/rm/edit/move), --json 스키마 v1, 종료 코드, `platform::env`, core 변경(InvalidFormat 전파, IdKeyIgnored) |
 | 2026-09-30 | qa | M1 CLI 통합 테스트(pty 포함), 버그 없음 |
 | 2026-09-30 | orchestrator | M1 검증: fmt --check, clippy -D warnings, cargo test 전부 통과(M0 재현 테스트 포함). architect 가 platform::env 등을 ARCHITECTURE 에 반영 |
+| 2026-10-01 | orchestrator | main(708b32b) 병합: TASK.md 충돌 해소(M0 [x] 유지 + cargo init 문구 병합), coder 가 [package] name 을 prompt-hub 로 변경(bin/lib 은 ph 유지), fmt/clippy/test 통과 |

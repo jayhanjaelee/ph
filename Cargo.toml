@@ -1,5 +1,5 @@
 [package]
-name = "ph"
+name = "prompt-hub"
 version = "0.1.0"
 edition = "2021"
 description = "Prompt Hub: AI Agent 용 prompt 저장소 CLI/TUI"

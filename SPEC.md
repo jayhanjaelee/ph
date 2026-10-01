@@ -275,6 +275,7 @@ cargo test
 
 ### 라이선스
 - **MIT** 라이선스. 저작권자는 Hanjae Lee (jayhanjaelee@gmail.com). 전문은 루트의 [LICENSE](LICENSE) 에 있다.
+- 배포 패키지(crate) 이름은 **`prompt-hub`**, 실행 파일 이름은 **`ph`** 다. `Cargo.toml` 에 `[package] name = "prompt-hub"` 와 `[[bin]] name = "ph"` (path = `src/main.rs`) 를 설정한다. 문서, 도움말, skill 에서 사용자에게 보이는 명령은 항상 `ph` 다.
 - `Cargo.toml` 에는 `license = "MIT"`, `authors = ["Hanjae Lee <jayhanjaelee@gmail.com>"]` 를 설정한다.
 - 새 의존성은 MIT 와 호환되는 라이선스(MIT, Apache-2.0, BSD, ISC 등 허용적 라이선스)만 추가한다. GPL/AGPL 계열은 Architect 승인 없이 추가하지 않는다.
 
@@ -299,9 +300,10 @@ cargo test
 
 작업 착수 전에 사용자와 확정한다.
 
-1. 배포 방식 (`cargo install`, GitHub release 바이너리).
+1. 배포 방식. 후보는 GitHub Release 바이너리, `cargo install prompt-hub`, cargo-binstall, Homebrew tap 이다. v0.1 은 앞의 두 가지를 제안한다.
 
 확정됨
+- 배포 패키지 이름은 `prompt-hub`, 바이너리 이름은 `ph` 다 (8절 라이선스 항목 참고).
 - 프로젝트별 local 저장소와 global 저장소를 **둘 다 지원**한다 (3.1~3.2절).
 - prompt 버전 이력은 v0.1 에서 **제외**한다 (1절 비목표).
 - 클립보드가 없는 환경(SSH, WSL 등)의 대체 동작(OSC52 등)은 v0.1 에서 **고려하지 않는다.** 복사에 실패하면 상태바에 에러 메시지만 표시한다.
