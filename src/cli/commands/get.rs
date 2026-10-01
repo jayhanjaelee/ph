@@ -2,7 +2,9 @@
 
 use crate::cli::args::GetArgs;
 use crate::cli::context::CliIo;
-use crate::cli::output::{ambiguous_warning, to_json_line, GetJson, PromptJson, SCHEMA_VERSION};
+use crate::cli::output::{
+    ambiguous_warning, fallback_warning, to_json_line, GetJson, PromptJson, SCHEMA_VERSION,
+};
 use crate::core::error::PhError;
 use crate::core::service::PromptService;
 
@@ -11,6 +13,9 @@ pub fn run(args: GetArgs, svc: &PromptService, io: &mut CliIo) -> Result<(), PhE
     let r = svc.get(&args.id, args.scope.filter())?;
     if r.ambiguous {
         io.info(&ambiguous_warning(r.prompt.id.as_str()));
+    }
+    if let Some(f) = &r.fallback {
+        io.info(&fallback_warning(r.prompt.id.as_str(), f));
     }
     if args.json {
         let line = to_json_line(&GetJson {

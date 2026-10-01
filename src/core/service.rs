@@ -57,8 +57,27 @@ pub struct ListResult {
 pub struct Resolved {
     /// 선택된 prompt (양쪽에 있으면 local)
     pub prompt: Prompt,
-    /// 양쪽 scope 에 같은 id 가 있으면 `true`
+    /// 양쪽 scope 에 같은 id 의 정상 항목이 있으면 `true`
     pub ambiguous: bool,
+    /// 우선순위상 앞 scope 의 파일이 깨져 뒤 scope 항목으로 대체되었으면 채운다 (`get` 만)
+    pub fallback: Option<BrokenFallback>,
+}
+
+/// 깨진 파일 때문에 다른 scope 항목으로 대체되었다는 정보.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrokenFallback {
+    /// 깨진 파일이 있는 scope
+    pub broken_scope: Scope,
+    /// `InvalidFormat` 의 설명 (호출자가 stderr 경고에 쓴다)
+    pub reason: String,
+}
+
+/// scope 하나에서 id 를 찾은 결과.
+enum Lookup {
+    Found(Prompt),
+    /// 파일은 있으나 읽을 수 없다 (`InvalidFormat`)
+    Broken(PhError),
+    Missing,
 }
 
 /// 쓰기 결과.
@@ -193,25 +212,82 @@ impl PromptService {
         Ok(result)
     }
 
-    /// id 로 조회한다 (대소문자 무시). 양쪽에 있으면 local 을 돌려주고 `ambiguous` 를 켠다.
+    /// 읽기용 조회 (대소문자 무시). 우선순위(local → global)상 첫 정상 항목을 돌려준다.
+    /// 앞 scope 의 파일이 깨져 있으면 뒤 scope 의 정상 항목으로 대체하고 `fallback` 에 알린다.
+    /// 뒤 scope 의 깨진 파일은 무시한다. 정상 항목이 없고 깨진 것이 있으면 `InvalidFormat` 이다.
     pub fn get(&self, id: &str, filter: ScopeFilter) -> Result<Resolved, PhError> {
         let pid = PromptId::parse(id)?;
         let mut found: Vec<Prompt> = Vec::new();
+        let mut first_broken: Option<(Scope, PhError)> = None;
+        let mut broken_before_found: Option<(Scope, String)> = None;
         for scope in self.scopes(filter)? {
-            if let Some(p) = self.find_in(scope, &pid)? {
-                found.push(p);
+            match self.lookup(scope, &pid)? {
+                Lookup::Found(p) => {
+                    if found.is_empty() {
+                        if let Some((s, e)) = &first_broken {
+                            broken_before_found = Some((*s, e.to_string()));
+                        }
+                    }
+                    found.push(p);
+                }
+                Lookup::Broken(e) => {
+                    if first_broken.is_none() {
+                        first_broken = Some((scope, e));
+                    }
+                }
+                Lookup::Missing => {}
             }
         }
         let ambiguous = found.len() > 1;
         match found.into_iter().next() {
-            Some(prompt) => Ok(Resolved { prompt, ambiguous }),
+            Some(prompt) => Ok(Resolved {
+                prompt,
+                ambiguous,
+                fallback: broken_before_found.map(|(broken_scope, reason)| BrokenFallback {
+                    broken_scope,
+                    reason,
+                }),
+            }),
+            None => match first_broken {
+                Some((_, e)) => Err(e),
+                None => Err(PhError::NotFound { id: id.to_string() }),
+            },
+        }
+    }
+
+    /// 쓰기 대상 해석용 조회 (엄격). 우선순위상 가장 앞에 **존재하는** 항목이 대상이고,
+    /// 그것이 깨졌으면 뒤 scope 가 정상이어도 `InvalidFormat` 이다. `fallback` 은 항상 `None`.
+    pub fn target(&self, id: &str, filter: ScopeFilter) -> Result<Resolved, PhError> {
+        let pid = PromptId::parse(id)?;
+        let mut chosen: Option<Prompt> = None;
+        let mut ambiguous = false;
+        for scope in self.scopes(filter)? {
+            match self.lookup(scope, &pid)? {
+                Lookup::Found(p) => {
+                    if chosen.is_some() {
+                        ambiguous = true;
+                    } else {
+                        chosen = Some(p);
+                    }
+                }
+                // 대상이 정해진 뒤의 깨진 파일은 무시한다.
+                Lookup::Broken(e) if chosen.is_none() => return Err(e),
+                Lookup::Broken(_) | Lookup::Missing => {}
+            }
+        }
+        match chosen {
+            Some(prompt) => Ok(Resolved {
+                prompt,
+                ambiguous,
+                fallback: None,
+            }),
             None => Err(PhError::NotFound { id: id.to_string() }),
         }
     }
 
-    /// 한 scope 에서 id(대소문자 무시)로 찾는다. 목록에 없지만 파일이 있어 읽기에 실패하면
-    /// `NotFound` 가 아니라 그 `InvalidFormat` 을 돌려준다 (존재하는 파일을 없다고 하지 않는다).
-    fn find_in(&self, scope: Scope, id: &PromptId) -> Result<Option<Prompt>, PhError> {
+    /// 한 scope 에서 id(대소문자 무시)로 찾는다. 목록에 없으면 `Storage::get` 을 한 번 더 불러
+    /// 깨진 파일(`Broken`)과 없는 파일(`Missing`)을 구분한다. IO 오류는 전파한다.
+    fn lookup(&self, scope: Scope, id: &PromptId) -> Result<Lookup, PhError> {
         let storage = self.storage(scope)?;
         let key = id.fold_key();
         if let Some(p) = storage
@@ -220,22 +296,24 @@ impl PromptService {
             .into_iter()
             .find(|p| p.id.fold_key() == key)
         {
-            return Ok(Some(p));
+            return Ok(Lookup::Found(p));
         }
         match storage.get(id) {
-            Ok(found) => Ok(found),
+            Ok(Some(p)) => Ok(Lookup::Found(p)),
+            Ok(None) => Ok(Lookup::Missing),
             Err(PhError::InvalidFormat {
                 id: eid,
                 line,
                 reason,
-            }) => Err(PhError::InvalidFormat {
+            }) => Ok(Lookup::Broken(PhError::InvalidFormat {
                 id: eid,
                 line,
                 reason: format!(
-                    "{reason}. 파일을 직접 고치거나 삭제한 뒤 다시 시도하세요 ({})",
+                    "{reason}. 파일을 직접 고치거나 지우세요 ({} {})",
+                    badge(scope),
                     storage.location()
                 ),
-            }),
+            })),
             Err(e) => Err(e),
         }
     }
@@ -250,12 +328,15 @@ impl PromptService {
         let storage = self.storage(scope)?;
         let title = new.title.trim().to_string();
         let base = PromptId::from_title(&title)?;
-        let taken: std::collections::HashSet<String> = storage
-            .list()?
-            .prompts
-            .iter()
-            .map(|p| p.id.fold_key())
-            .collect();
+        // 깨져서 건너뛴 파일의 이름도 사용 중으로 본다 (덮어쓰기 방지).
+        let listing = storage.list()?;
+        let mut taken: std::collections::HashSet<String> =
+            listing.prompts.iter().map(|p| p.id.fold_key()).collect();
+        for s in &listing.skipped {
+            let stem = s.name.strip_suffix(".md").unwrap_or(&s.name);
+            let nfc: String = unicode_normalization::UnicodeNormalization::nfc(stem).collect();
+            taken.insert(nfc.to_lowercase());
+        }
         let mut id = base.clone();
         let mut n = 2u32;
         while taken.contains(&id.fold_key()) {
@@ -282,7 +363,7 @@ impl PromptService {
         })
     }
 
-    /// 부분 수정. 대상은 읽기 규칙(local 우선)으로 찾고 `updated_at` 을 갱신한다.
+    /// 부분 수정. 대상은 `target` 규칙(local 우선, 깨진 파일은 대체하지 않음)으로 찾고 `updated_at` 을 갱신한다.
     /// id 는 title 이 바뀌어도 유지한다.
     pub fn update(
         &self,
@@ -290,7 +371,7 @@ impl PromptService {
         patch: PromptPatch,
         filter: ScopeFilter,
     ) -> Result<Written, PhError> {
-        let mut prompt = self.get(id, filter)?.prompt;
+        let mut prompt = self.target(id, filter)?.prompt;
         if let Some(t) = patch.title {
             prompt.title = require_title(&t)?;
         }
@@ -309,7 +390,7 @@ impl PromptService {
 
     /// 삭제. 지운 scope 를 돌려준다.
     pub fn remove(&self, id: &str, filter: ScopeFilter) -> Result<Scope, PhError> {
-        let p = self.get(id, filter)?.prompt;
+        let p = self.target(id, filter)?.prompt;
         self.storage(p.scope)?.delete(&p.id)?;
         Ok(p.scope)
     }
@@ -320,13 +401,20 @@ impl PromptService {
         let dest = self.storage(to)?;
         let from = to.other();
         let pid = PromptId::parse(id)?;
-        let mut prompt = self
-            .find_in(from, &pid)?
-            .ok_or_else(|| PhError::NotFound { id: id.to_string() })?;
-        if self.find_in(to, &pid)?.is_some() {
-            return Err(PhError::AlreadyExists {
-                id: prompt.id.as_str().to_string(),
-            });
+        let mut prompt = match self.lookup(from, &pid)? {
+            Lookup::Found(p) => p,
+            Lookup::Broken(e) => return Err(e),
+            Lookup::Missing => return Err(PhError::NotFound { id: id.to_string() }),
+        };
+        match self.lookup(to, &pid)? {
+            Lookup::Found(_) => {
+                return Err(PhError::AlreadyExists {
+                    id: prompt.id.as_str().to_string(),
+                })
+            }
+            // 깨진 파일을 덮어쓰지 않는다.
+            Lookup::Broken(e) => return Err(e),
+            Lookup::Missing => {}
         }
         prompt.scope = to;
         dest.put(&prompt)?;
@@ -342,13 +430,13 @@ impl PromptService {
 
     /// 외부 에디터용 전체 텍스트 (frontmatter 포함).
     pub fn export_raw(&self, id: &str, filter: ScopeFilter) -> Result<String, PhError> {
-        format::serialize(&self.get(id, filter)?.prompt)
+        format::serialize(&self.target(id, filter)?.prompt)
     }
 
     /// 편집된 전체 텍스트를 검증해 저장한다. 실패하면 원본은 바뀌지 않는다.
     /// id 와 `created_at` 은 유지하고 `updated_at` 을 갱신한다.
     pub fn save_raw(&self, id: &str, raw: &str, filter: ScopeFilter) -> Result<Written, PhError> {
-        let old = self.get(id, filter)?.prompt;
+        let old = self.target(id, filter)?.prompt;
         let (mut prompt, id_key) = format::parse_detailed(raw, &old.id, old.scope)?;
         prompt.title = require_title(&prompt.title)?;
         prompt.tags = clean_tags(prompt.tags);
@@ -371,6 +459,13 @@ impl PromptService {
             auto_selected: false,
             notes: Vec::new(),
         })
+    }
+}
+
+fn badge(s: Scope) -> &'static str {
+    match s {
+        Scope::Local => "[L]",
+        Scope::Global => "[G]",
     }
 }
 
@@ -600,5 +695,126 @@ mod tests {
         let w = s.save_raw("문서", &edited, ScopeFilter::All).unwrap();
         assert_eq!(w.prompt.body, "새 본문");
         assert_eq!(w.prompt.id.as_str(), "문서");
+    }
+
+    /// 한쪽 scope 에 깨진 파일을 흉내 내는 저장소: `get` 이 `InvalidFormat`, `list` 는 skipped.
+    struct BrokenStorage {
+        scope: Scope,
+        inner: MemoryStorage,
+        broken: &'static str,
+    }
+
+    impl Storage for BrokenStorage {
+        fn scope(&self) -> Scope {
+            self.scope
+        }
+        fn location(&self) -> String {
+            "broken".into()
+        }
+        fn list(&self) -> Result<crate::core::storage::Listing, PhError> {
+            let mut l = self.inner.list()?;
+            l.skipped.push(SkippedEntry {
+                name: format!("{}.md", self.broken),
+                reason: "bad".into(),
+            });
+            Ok(l)
+        }
+        fn get(&self, id: &PromptId) -> Result<Option<Prompt>, PhError> {
+            if id.as_str() == self.broken {
+                return Err(PhError::InvalidFormat {
+                    id: Some(self.broken.into()),
+                    line: Some(1),
+                    reason: "bad".into(),
+                });
+            }
+            self.inner.get(id)
+        }
+        fn put(&self, p: &Prompt) -> Result<(), PhError> {
+            self.inner.put(p)
+        }
+        fn delete(&self, id: &PromptId) -> Result<(), PhError> {
+            self.inner.delete(id)
+        }
+    }
+
+    fn broken_svc(broken_local: bool, broken_global: bool) -> PromptService {
+        let mk = |scope, broken: bool| -> Box<dyn Storage> {
+            let inner = MemoryStorage::new(scope);
+            if broken {
+                Box::new(BrokenStorage {
+                    scope,
+                    inner,
+                    broken: "x",
+                })
+            } else {
+                Box::new(inner)
+            }
+        };
+        PromptService::new(
+            mk(Scope::Global, broken_global),
+            Some(mk(Scope::Local, broken_local)),
+            clock("2026-09-30T12:00:00+09:00"),
+        )
+    }
+
+    #[test]
+    fn broken_rules_r1_r2_r3_r6() {
+        // R1/R6: 정상 항목이 없다
+        for (l, g) in [(true, false), (false, true), (true, true)] {
+            let s = broken_svc(l, g);
+            assert!(matches!(
+                s.get("x", ScopeFilter::All),
+                Err(PhError::InvalidFormat { .. })
+            ));
+            assert!(matches!(
+                s.target("x", ScopeFilter::All),
+                Err(PhError::InvalidFormat { .. })
+            ));
+        }
+        // R2: local 정상 + global 깨짐
+        let s = broken_svc(false, true);
+        s.add(new("x"), WriteTarget::Explicit(Scope::Local))
+            .unwrap();
+        let r = s.get("x", ScopeFilter::All).unwrap();
+        assert_eq!((r.prompt.scope, r.fallback), (Scope::Local, None));
+        assert!(s.target("x", ScopeFilter::All).is_ok());
+        // R3: local 깨짐 + global 정상
+        let s = broken_svc(true, false);
+        s.add(new("x"), WriteTarget::Explicit(Scope::Global))
+            .unwrap();
+        let r = s.get("x", ScopeFilter::All).unwrap();
+        assert_eq!(r.prompt.scope, Scope::Global);
+        assert_eq!(r.fallback.unwrap().broken_scope, Scope::Local);
+        assert!(!r.ambiguous);
+        assert!(matches!(
+            s.remove("x", ScopeFilter::All),
+            Err(PhError::InvalidFormat { .. })
+        ));
+        assert!(matches!(
+            s.get("x", ScopeFilter::Only(Scope::Local)),
+            Err(PhError::InvalidFormat { .. })
+        ));
+        assert_eq!(
+            s.remove("x", ScopeFilter::Only(Scope::Global)).unwrap(),
+            Scope::Global
+        );
+    }
+
+    #[test]
+    fn move_and_add_respect_broken_files() {
+        let s = broken_svc(true, false);
+        s.add(new("x"), WriteTarget::Explicit(Scope::Global))
+            .unwrap();
+        // 대상(local)에 깨진 같은 id
+        assert!(matches!(
+            s.move_to("x", Scope::Local),
+            Err(PhError::InvalidFormat { .. })
+        ));
+        assert!(s.get("x", ScopeFilter::Only(Scope::Global)).is_ok());
+        // 깨진 파일 이름은 add 가 피한다
+        let w = s
+            .add(new("x"), WriteTarget::Explicit(Scope::Local))
+            .unwrap();
+        assert_eq!(w.prompt.id.as_str(), "x-2");
     }
 }

@@ -111,7 +111,12 @@ updated_at = "2026-09-30T12:00:00+09:00"
 ```
 
 - 쓰기는 임시 파일에 쓴 뒤 rename 하는 방식으로 atomic 하게 한다.
-- 파일이 깨져 있으면(frontmatter 오류 등) `list`/`search` 는 그 파일만 건너뛰고 stderr 로 경고하며 나머지는 정상 출력한다. 하지만 `get`/`edit`/`rm` 의 대상이 그 깨진 파일이면 NotFound 가 아니라 `InvalidFormat` 에러(원인과 위치 포함)다. 존재하는 파일을 없는 것처럼 말하지 않기 위해서다.
+- **깨진 파일(frontmatter 오류 등) 처리.** 같은 id 를 두고 scope 별 상태가 다를 수 있으므로 아래 규칙으로 고정한다.
+  1. `list`/`search` 는 깨진 파일만 건너뛰고(`skipped`) stderr 로 경고하며 나머지는 정상 출력한다.
+  2. 그 id 의 파일이 **깨진 것뿐**이면(어느 scope 든) `get`/`edit`/`rm` 은 NotFound 가 아니라 `InvalidFormat` 에러(원인과 위치 포함)다. 존재하는 파일을 없는 것처럼 말하지 않기 위해서다.
+  3. 우선순위상 **뒤**(global)의 같은 id 가 깨져 있고 앞(local)이 정상이면, 정상 local 을 그대로 쓰고 에러도 경고도 내지 않는다.
+  4. 우선순위상 **앞**(local)이 깨져 있고 같은 id 의 global 이 정상이면, `get` 은 global 항목을 반환하고 stderr 에 경고(`local 의 <id> 가 깨져 있어 global 을 사용합니다`)를 낸다. 종료 코드는 0 이고 `--json` 이어도 stdout 스키마는 그대로다 (경고는 stderr 만).
+  5. 4번 상황에서 **쓰기 동작**(`edit`, `rm`, `tag`, 내부 update 등)은 scope 를 지정하지 않으면 `InvalidFormat` 이다 (깨진 local 을 두고 global 을 조용히 고치거나 지우지 않는다). `--global` 을 명시하면 global 을 대상으로 할 수 있다. `move` 도 같은 이유로 원본 또는 대상 scope 에 깨진 같은 id 가 있으면 `InvalidFormat` 이다.
 - 저장소 접근은 `Storage` trait 로 추상화한다. 테스트에서는 in-memory 구현을 쓴다.
 - `PromptService` 는 scope 별 `Storage` 인스턴스(global 필수, local 선택)를 가지며, 3.2절의 병합, 우선순위, 쓰기 대상 결정을 **core 안에서** 처리한다. cli 와 tui 는 이 규칙을 다시 구현하지 않는다.
 

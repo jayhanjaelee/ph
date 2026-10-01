@@ -10,7 +10,7 @@ use crate::core::service::{PromptService, ScopeFilter};
 
 /// prompt 를 삭제한다. 확인한 항목과 실제로 지우는 항목은 같다 (scope 고정).
 pub fn run(args: RmArgs, svc: &PromptService, io: &mut CliIo) -> Result<(), PhError> {
-    let r = svc.get(&args.id, args.scope.filter())?;
+    let r = svc.target(&args.id, args.scope.filter())?;
     let prompt = r.prompt;
     if r.ambiguous {
         io.info(&ambiguous_warning(prompt.id.as_str()));

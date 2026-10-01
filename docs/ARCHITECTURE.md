@@ -165,6 +165,12 @@ pub enum ScopeFilter { All, Only(Scope) }          // --local / --global, TUI �
 pub enum WriteTarget { Auto, Explicit(Scope) }
 
 pub struct Entry { pub prompt: Prompt, pub shadowed: bool }   // shadowed: local 에 가려진 global 항목
+pub struct Resolved {
+    pub prompt: Prompt,
+    pub ambiguous: bool,                        // 양쪽 scope 에 정상 항목이 모두 있음 (기존)
+    pub fallback: Option<BrokenFallback>,       // 우선순위상 앞 scope 가 깨져 뒤 scope 정상 항목으로 대체됨 (get 만 채운다)
+}
+pub struct BrokenFallback { pub broken_scope: Scope, pub reason: String }  // reason = InvalidFormat 의 Display. 기존 ambiguous 와 같이 cli 가 stderr 경고로 바꾼다
 pub struct Written { pub prompt: Prompt, pub scope: Scope, pub auto_selected: bool, pub notes: Vec<WriteNote> } // cli 가 stderr 안내에 사용
 pub enum WriteNote { IdKeyIgnored }   // save_raw: 편집한 frontmatter 에 `id` 키가 있었으나 무시했다 (SPEC 2절). 표시는 호출자 몫
 
@@ -174,7 +180,11 @@ impl PromptService {
     // 읽기: 병합 + local 우선 (SPEC 3.2)
     pub fn list(&self, filter: ScopeFilter, tag: Option<&str>) -> Result<ListResult, PhError>; // Entry 목록 + skipped 경고
     pub fn search(&self, query: &str, filter: ScopeFilter, tag: Option<&str>) -> Result<Vec<Entry>, PhError>;
-    pub fn get(&self, id: &str, filter: ScopeFilter) -> Result<Resolved, PhError>; // Resolved { prompt, ambiguous: bool }
+    /// 읽기용 조회. 깨진 파일은 규칙 R1~R3 (아래)에 따라 `fallback` 으로 대체될 수 있다.
+    pub fn get(&self, id: &str, filter: ScopeFilter) -> Result<Resolved, PhError>;
+    /// 쓰기 대상 해석용 조회 (엄격). 우선순위상 가장 앞에 **존재하는** 항목이 대상이고 그것이 깨졌으면
+    /// 뒤 scope 가 정상이어도 `InvalidFormat` 이다 (R4). `fallback` 은 항상 None. cli 의 edit/rm 이 쓴다.
+    pub fn target(&self, id: &str, filter: ScopeFilter) -> Result<Resolved, PhError>;
 
     // 쓰기: 대상 결정은 여기서 (SPEC 3.2)
     pub fn add(&self, new: NewPrompt, target: WriteTarget) -> Result<Written, PhError>;
@@ -196,9 +206,23 @@ impl PromptService {
 규칙 구현 위치:
 
 - `--local`(`ScopeFilter::Only(Local)`) 인데 local 이 없으면 **읽기(`list`/`search`/`get`)와 쓰기 모두** `PhError::LocalNotInitialized` (`ph init` 안내 포함). 빈 결과나 NotFound 로 넘기지 않고 global 로도 가지 않는다.
-- **알려진 동작 (깨진 파일과 다른 scope 의 정상 항목)**: `find_in` 은 한 scope 의 깨진 파일이 낸 `InvalidFormat` 을 다른 scope 에 같은 id 의 정상 항목이 있어도 **전파한다** (가려진 것처럼 조용히 넘어가지 않는다). 우회는 정상 항목이 있는 쪽을 `--global`/`--local` 로 명시하는 것이다. 의도된 동작으로 유지하고 회귀 테스트로 잠근다.
-- **깨진 파일의 `get`**: id 로 찾은 파일이 있는데 파싱에 실패하면 `NotFound` 가 아니라 `InvalidFormat`(id, 줄 번호, 사유)을 돌려준다. 구현: `list()` 결과에 없으면 `Storage::get(&id)` 를 한 번 더 호출해 그 에러를 전파한다. `update`/`remove`/`export_raw`/`save_raw` 도 대상 해석에 `get` 을 쓰므로 같다 (깨진 파일은 손으로 고치거나 지워야 한다는 안내가 메시지에 있어야 한다).
-- **TUI 는 항상 scope 를 명시한다 (기본값 채택, 사용자 미확인)**: 편집/삭제/태그/`E` 는 선택 항목의 scope 를 `ScopeFilter::Only(entry.prompt.scope)` 로 넘긴다. 현재 시그니처(`update`, `remove`, `export_raw`, `save_raw` 가 `filter` 를 받는다)로 충분하므로 API 변경은 없다. 그러면 shadowed global 항목을 골라도 그 global 이 대상이다. CLI 는 `--local/--global` 이 없을 때만 `All`(local 우선)을 쓴다. `move_to` 는 원래 scope 를 명시한다.
+- **깨진 파일 규칙 (SPEC 3.3절, 사용자 결정 A안)**. 내부 `lookup(scope, id) -> Found(Prompt) | Broken(reason) | Missing` 을 만들고 (`Storage::list().prompts` 에서 찾고, 없으면 `Storage::get(&id)` 를 한 번 더 호출해 `Ok(None)` → Missing, `Err(InvalidFormat)` → Broken, 그 외 `Err`(Io 등) 는 전파), scope 를 우선순위(local → global) 순으로 조회한다. `ScopeFilter::Only(s)` 면 그 scope 하나만 본다 (Broken → `InvalidFormat`).
+
+  | # | 상황 (filter = All) | `get` | `target` (edit/rm/update/save_raw/export_raw) |
+  |---|---|---|---|
+  | R1 | 깨진 항목만 존재 (어느 scope 든) | `InvalidFormat` | `InvalidFormat` |
+  | R2 | local 정상 + global 깨짐 | local 반환, `fallback = None`, 에러/경고 없음 | local (동일) |
+  | R3 | local 깨짐 + global 정상 | global 반환, `fallback = Some{ broken_scope: Local, reason }` , `ambiguous = false` | **`InvalidFormat`** (R4) |
+  | R5 | 양쪽 정상 | local 반환, `ambiguous = true` (기존) | 동일 |
+  | R6 | 양쪽 깨짐 | `InvalidFormat` (local 의 것) | 동일 |
+
+  - `get` 의 알고리즘: 우선순위 순으로 첫 `Found` 를 선택한다. 그보다 앞선 scope 가 `Broken` 이면 `fallback` 을 채우고, 뒤 scope 의 `Broken` 은 무시한다. `Found` 가 없고 `Broken` 이 하나라도 있으면 (우선순위 순 첫 번째의) `InvalidFormat`, 전부 `Missing` 이면 `NotFound`.
+  - `target` 의 알고리즘: 우선순위 순으로 `Missing` 이 아닌 **첫 항목**이 대상이다. `Broken` 이면 `InvalidFormat`, `Found` 면 반환 (뒤 scope 의 상태는 `ambiguous` 계산에만 쓰고 `Broken` 은 무시).
+  - `update`/`remove`/`export_raw`/`save_raw` 는 내부적으로 `target` 을 쓴다. 호출자가 `--global` 처럼 scope 를 명시하면 `Only(Global)` 이므로 R3 에서도 global 을 대상으로 할 수 있다. TUI 는 항상 `Only(항목의 scope)` 라서 영향이 없다.
+  - `move_to(id, to)`: 원본 scope 가 `Broken` 이면 `InvalidFormat`, **대상 scope 에 같은 id 가 `Found` 면 `AlreadyExists`, `Broken` 이면 `InvalidFormat`** (깨진 파일을 덮어쓰지 않는다).
+  - `add`: id 충돌 검사에 `list().skipped` 의 파일명(확장자 제외, `fold_key`)도 포함한다. 깨진 파일과 같은 이름을 만들어 **덮어쓰는 일이 없어야 한다** (이 경우 `-2` suffix 로 회피).
+  - 깨진 파일의 `InvalidFormat` 메시지에는 "파일을 직접 고치거나 지우세요" 안내와 scope 배지(`[L]`/`[G]`)를 포함한다.
+  - 한계: 대소문자만 다른 이름의 깨진 파일은 `Storage::get` 이 정확한 이름(NFC 정규화 포함)만 찾으므로 감지하지 못할 수 있다. 이 경우 `NotFound` 가 될 수 있고, `list` 의 `skipped` 로 확인한다 (알려진 한계).
 - `get` 이 양쪽에 있으면 local 을 반환하고 `ambiguous = true`. cli 가 이를 stderr 경고로 바꾼다. 이 동작은 고정이며 테스트로 잠근다.
 - `update`/`save_raw`/`add` 는 `updated_at` 을 `Clock` 으로 갱신한다. `created_at` 은 유지한다.
 - id 중복은 `fold_key` 로 검사한다. `add` 에서 충돌하면 `with_suffix` 로 자동 회피한다. `update`/`save_raw` 로 title 이 바뀌어도 **id 는 바꾸지 않는다**, 외부 에디터 frontmatter 의 `id` 키는 무시하고 `WriteNote::IdKeyIgnored` 로 알린다 (SPEC 2절. 파일명은 안정적이어야 하고 agent 가 id 로 참조한다). 이름 변경 동작은 v0.1 에 없다.
@@ -562,20 +586,21 @@ fn main() -> ExitCode {
 |---|---|---|---|---|
 | `init` | 서비스 없음. `storage::fs::init_local(io.cwd, home)` | `.ph` 디렉터리 경로 한 줄 | 새로 만들었으면 `local 저장소를 만들었습니다: <경로>`. 이미 있으면 `이미 초기화되어 있습니다: <경로>` (종료 0). 상위 디렉터리에 다른 local 이 있으면 `참고: 상위 <경로> 에도 local 저장소가 있습니다` | cwd 가 홈이면 `Usage` (2) |
 | `add` | 본문 결정 → `svc.add(NewPrompt, args.scope.target())` | 저장된 id 한 줄 | `Written.auto_selected` 일 때만 `저장됨: [L] <id> (<위치>)` | 잘못된 title → `InvalidId`(1), `--local` 인데 local 없음 → `LocalNotInitialized`(1) |
-| `get` | `svc.get(id, filter)` | **본문만**, 저장된 그대로 (끝에 개행을 덧붙이지 않는다) | `ambiguous` 면 경고 (아래) | 없음 → `NotFound`(3), 깨진 파일 → `InvalidFormat`(1) |
+| `get` | `svc.get(id, filter)` | **본문만**, 저장된 그대로 (끝에 개행을 덧붙이지 않는다) | `ambiguous` 면 경고, `fallback` 이면 깨짐 경고 (아래) | 없음 → `NotFound`(3), 깨진 파일만 있음(R1) → `InvalidFormat`(1) |
 | `list` | `svc.list(filter, tag)` | 한 줄에 하나 (10.5절) | `skipped` 마다 경고 한 줄 | `--local` 인데 local 없음 → 1 |
 | `search` | `svc.search(query, filter, tag)` | `list` 와 같은 형식 | `list` 와 같음 (search 는 skipped 를 돌려주지 않으므로 M1 에서는 경고 없음. 필요하면 서비스에서 `ListResult` 를 돌려주게 바꾼다) | 빈 검색어 → `Usage`(2) |
 | `edit` | 10.6절 | 없음 | `저장됨: [L] <id>` 또는 `변경 없음` | 10.6절 |
-| `rm` | `svc.get` → 확인 → `svc.remove(id, Only(scope))` | (JSON 일 때만) | `삭제됨: [L] <id>`. 양쪽에 같은 id 가 있었으면 `참고: global 에 같은 id 가 남아 있습니다` | 없는 id → `NotFound`(3, `--yes` 여부와 무관). 존재하는 id 이고 비대화형에서 `--yes` 없음 → `NonInteractive`(2) |
+| `rm` | `svc.target` → 확인 → `svc.remove(id, Only(scope))` | (JSON 일 때만) | `삭제됨: [L] <id>`. 양쪽에 같은 id 가 있었으면 `참고: global 에 같은 id 가 남아 있습니다` | 없는 id → `NotFound`(3, `--yes` 여부와 무관). 존재하는 id 이고 비대화형에서 `--yes` 없음 → `NonInteractive`(2) |
 | `move` | `svc.move_to(id, to)` | 이동한 prompt 의 id | `이동됨: [G] <id> → [L]` | 대상에 같은 id → `AlreadyExists`(1) |
 
 세부 규칙:
 
 - **본문 결정 (`add`)**: `--body <text>` 는 그대로, `--file <path>` 는 UTF-8 로 읽는다 (BOM 과 CRLF 는 읽기에서 허용하고 저장은 서비스와 `format` 이 LF 로 통일한다), `--stdin` 은 EOF 까지 읽는다. 셋 중 하나는 clap 이 필수로 강제한다. 빈 본문도 허용한다. 파일을 읽지 못하면 `PhError::io("<경로> 읽기", e)`.
+- **깨짐 경고 (`get` 만)**: `Resolved.fallback` 이 `Some` 이면 stderr 에 `경고: local 의 '<id>' 가 깨져 있어 global 을 사용합니다 (<reason>)` 한 줄을 낸다 (고치거나 지우라는 안내는 `reason` 에 이미 들어 있다). 종료 코드 0. `--json` 이어도 stdout 의 JSON 스키마는 바뀌지 않고 경고는 stderr 로만 나간다 (`ambiguous` 와 같은 방식, `warnings` 필드를 `get` 에 추가하지 않는다). `rm`/`edit` 은 `target` 을 쓰므로 이 경고가 아니라 `InvalidFormat` 이다 (`--global` 로 우회).
 - **ambiguous 경고 (`get`, `rm`, `edit`)**: `경고: id '<id>' 가 local 과 global 양쪽에 있습니다. local 을 사용합니다. global 을 쓰려면 --global 을 지정하세요`. 결과는 바뀌지 않는다 (SPEC 3.2절 Agent 안전 규칙).
 - **skipped 경고**: `경고: 읽지 못한 파일 [G] <이름>: <사유>`. 종료 코드는 0 이다.
-- **`rm` 확인**: `--yes` 가 있으면 확인 없이 삭제한다. 없고 `io.interactive` 이면 stderr 에 `[L] <title> (<id>) 를 삭제할까요? [y/N] ` 를 쓰고 stdin 에서 한 줄을 읽는다. `y`, `yes`(대소문자 무시)만 진행하고, 그 외는 `취소했습니다` 를 stderr 로 내고 종료 코드 0 이다. 비대화형이고 `--yes` 가 없으면 `NonInteractive("삭제하려면 --yes 를 지정하세요")` 로 **프롬프트 없이** 실패한다. 단 대상 조회(`svc.get`)가 확인보다 먼저이므로 **없는 id 는 `--yes` 없이도 `NotFound`(3)** 이고, `NonInteractive`(2) 는 존재하는 id 에만 나온다.
-- **`rm`/`edit` 의 대상 고정**: `svc.get` 으로 대상을 찾은 뒤 그 항목의 scope 로 `Only(scope)` 를 만들어 이후 호출에 쓴다. 확인 프롬프트에 보인 항목과 실제로 지우는 항목이 같아야 한다.
+- **`rm` 확인**: `--yes` 가 있으면 확인 없이 삭제한다. 없고 `io.interactive` 이면 stderr 에 `[L] <title> (<id>) 를 삭제할까요? [y/N] ` 를 쓰고 stdin 에서 한 줄을 읽는다. `y`, `yes`(대소문자 무시)만 진행하고, 그 외는 `취소했습니다` 를 stderr 로 내고 종료 코드 0 이다. 비대화형이고 `--yes` 가 없으면 `NonInteractive("삭제하려면 --yes 를 지정하세요")` 로 **프롬프트 없이** 실패한다. 단 대상 조회(`svc.target`)가 확인보다 먼저이므로 **없는 id 는 `--yes` 없이도 `NotFound`(3)** 이고, `NonInteractive`(2) 는 존재하는 id 에만 나온다.
+- **`rm`/`edit` 의 대상 고정**: **`svc.target`**(엄격 조회, 3.4절 R4)으로 대상을 찾은 뒤 그 항목의 scope 로 `Only(scope)` 를 만들어 이후 호출에 쓴다. 확인 프롬프트에 보인 항목과 실제로 지우는 항목이 같아야 한다.
 - **`init` 의 `.gitkeep`**: `init_local` 은 `.ph/prompts/` 를 만들고 그 안에 빈 `.gitkeep` 을 둔다 (git 은 빈 디렉터리를 추적하지 않는다). `FsStorage::list` 는 `.md` 만 읽으므로 영향이 없다. 홈 디렉터리 판별은 `platform::paths::resolve_dirs(io.home_override)` 결과의 `Dirs.home` 과 `io.cwd` 를 비교한다 (경로 비교는 `Path` 로).
 - **`move`**: `--to local` 인데 local 이 없으면 `LocalNotInitialized`. 시각은 바꾸지 않는다 (서비스 동작).
 
@@ -618,7 +643,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 | `init` | `{"schema_version":1,"path":"...","created":bool}` |
 
 - `--json` 이어도 stderr 의 경고와 안내는 그대로 나간다 (stdout 만 JSON 이다). `warnings` 배열은 같은 내용을 agent 가 읽기 쉽게 담은 것이다 (`kind` 는 `"skipped"`).
-- `get --json` 에서 `ambiguous` 는 stderr 경고와 별개로 항상 채운다.
+- `get --json` 에서 `ambiguous` 는 stderr 경고와 별개로 항상 채운다. 깨짐 대체(`fallback`)는 JSON 에 넣지 않고 stderr 경고만 낸다 (스키마 v1 유지).
 - 에러 JSON 은 10.7절.
 
 ### 10.6 `ph edit` 흐름
@@ -626,7 +651,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 ```
 edit <id> [--local|--global]
  1. io.interactive 가 false 면 NonInteractive("ph edit 은 터미널에서만 쓸 수 있습니다. 스크립트는 ph add/rm 을 쓰세요") → 종료 2
- 2. resolved = svc.get(id, filter)               # 대상 확정. ambiguous 면 경고
+ 2. resolved = svc.target(id, filter)            # 대상 확정 (엄격: local 이 깨졌으면 global 로 대체하지 않고 InvalidFormat). ambiguous 면 경고
     scope = resolved.prompt.scope;  only = Only(scope)
  3. raw = svc.export_raw(id, only)               # frontmatter 포함 전체
  4. tmp = TempEditFile::create(id, &raw)         # platform::editor. Drop 시 삭제
@@ -699,7 +724,18 @@ pub fn report_error(e: &PhError, json: bool, stderr: &mut dyn Write) -> ExitCode
 - assert 는 경로 구분자와 개행에 의존하지 않는다 (규칙 8): 줄 단위 비교는 `lines()`, 경로는 `Path` 로 비교. `--json` 은 `serde_json::Value` 로 파싱해 필드를 확인한다.
 - `edit` 의 통합 테스트는 가짜 에디터 스크립트가 필요하다. 스크립트 생성은 `tests/common` 헬퍼에 격리하고 Unix 전용이면 그 헬퍼 안에서만 `cfg` 를 쓴다 (`src/` 규칙은 아니지만 Windows 컴파일 확인이 깨지지 않게).
 - stdout/stderr 구분을 검증한다: `get` 은 stdout 이 본문과 정확히 같고 stderr 에 데이터가 없어야 한다. 에러 시 stdout 이 비어 있어야 한다.
-- 다음 동작은 회귀 테스트로 잠근다: `get` 의 ambiguous 시 local 반환과 경고, 깨진 파일 `get` 의 `InvalidFormat`(종료 1), `--local` 인데 local 없음(읽기와 쓰기 모두 종료 1), 비대화형 `rm` 의 `--yes` 요구(종료 2).
+- **깨진 파일 회귀 테스트** (service 단위 + CLI 핸들러 단위 + `tests/` 통합, 3.4절 R1~R6):
+  1. R1: local 만 깨짐 / global 만 깨짐 → `get`·`target`·`remove`·`update`·`export_raw` 모두 `InvalidFormat` (NotFound 아님), 종료 1.
+  2. R2: local 정상 + global 깨짐 → `get` 이 local 반환, `fallback = None`, stderr 에 경고 없음, 종료 0.
+  3. R3-get: local 깨짐 + global 정상 → `get` 이 global 반환, `fallback.broken_scope = Local`, stderr 에 깨짐 경고, 종료 0. `--json` 이면 stdout 은 스키마 v1 그대로이고 `ambiguous = false`, 경고는 stderr 에만 있다.
+  4. R3-write: 같은 상황에서 `target`/`update`/`remove`/`save_raw`/CLI `edit`·`rm` 은 scope 미지정이면 `InvalidFormat` 이고 **global 파일은 변하지 않는다**. `--global` 명시면 성공한다.
+  5. R5: 양쪽 정상 → local 반환 + `ambiguous = true` + 경고 (기존).
+  6. R6: 양쪽 깨짐 → `InvalidFormat`.
+  7. `--local`/`--global` 로 scope 를 한정한 `get` 은 대체 없이 해당 scope 의 깨짐을 `InvalidFormat` 으로 낸다.
+  8. `list`/`search` 는 깨진 파일을 `skipped` 로 돌려주고 나머지는 정상이다 (종료 0, stderr 경고).
+  9. `move_to`: 원본 또는 대상 scope 에 깨진 같은 id 가 있으면 `InvalidFormat`, 대상의 정상 같은 id 는 `AlreadyExists`, 어느 쪽 파일도 변하지 않는다.
+  10. `add`: 깨진 파일과 같은 이름이 될 title 은 덮어쓰지 않고 suffix 로 회피한다 (깨진 파일 내용 보존 assert).
+- 다음 동작도 회귀 테스트로 잠근다: `get` 의 ambiguous 시 local 반환과 경고, 깨진 파일 규칙(위 목록), `--local` 인데 local 없음(읽기와 쓰기 모두 종료 1), 비대화형 `rm` 의 `--yes` 요구(종료 2).
 
 ### 10.9 M1 범위 밖 (하지 않는다)
 
