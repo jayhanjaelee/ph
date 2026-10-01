@@ -241,3 +241,13 @@ pub fn ambiguous_warning(id: &str) -> String {
         "경고: id '{id}' 가 local 과 global 양쪽에 있습니다. local 을 사용합니다. global 을 쓰려면 --global 을 지정하세요"
     )
 }
+
+/// 깨진 파일 대체 경고 문구 (`get` 만).
+pub fn fallback_warning(id: &str, f: &crate::core::service::BrokenFallback) -> String {
+    format!(
+        "경고: {} 의 '{id}' 가 깨져 있어 {} 을 사용합니다 ({})",
+        f.broken_scope.as_str(),
+        f.broken_scope.other().as_str(),
+        f.reason
+    )
+}

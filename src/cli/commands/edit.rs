@@ -14,7 +14,7 @@ pub fn run(args: EditArgs, svc: &PromptService, io: &mut CliIo) -> Result<(), Ph
             "ph edit 은 터미널에서만 쓸 수 있습니다. 스크립트는 ph add/rm 을 쓰세요".to_string(),
         ));
     }
-    let resolved = svc.get(&args.id, args.scope.filter())?;
+    let resolved = svc.target(&args.id, args.scope.filter())?;
     let id = resolved.prompt.id.as_str().to_string();
     if resolved.ambiguous {
         io.info(&ambiguous_warning(&id));

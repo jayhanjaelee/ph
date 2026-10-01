@@ -26,7 +26,7 @@
 - SPEC 변경 승인 (2026-09-30 사용자): q/Esc 둘 다 종료, 검색 #태그 미지원(철회), COLORTERM/NO_COLOR 읽기, Enter=원문 복사, 수정 시 id 유지, tui-textarea→ratatui-textarea 정정
 - 기본값 채택, 사용자 미확인: TUI 는 선택 항목 scope 기준 조작, 모드 목록에 TagInput/Help/Notice/Preview 추가
 - 깨진 파일 get = InvalidFormat, local 없을 때 --local 읽기도 에러, 공백 파일명 skipped, 유니코드 공백 '-' 치환 (2026-09-30 사용자)
-- 알려진 동작: 한 scope 의 깨진 파일 에러는 다른 scope 에 정상 항목이 있어도 get 에서 전파됨(우회: --global/--local)
+- 깨진 파일 규칙 A안 (2026-10-01 사용자, SPEC 3.3절): 깨진 파일만 있으면 InvalidFormat, 우선순위 뒤 scope 의 깨짐은 무시, local 깨짐+global 정상이면 get 은 global 반환+stderr 경고(종료 0), edit/rm/update/move 는 scope 미지정 시 InvalidFormat 유지(--global 로 명시), list/search 는 skipped
 
 ## 미결정 (SPEC.md 10절)
 - [ ] 배포 방식 (패키지 이름은 확정. 채널은 GitHub Release + `cargo install` 제안)
@@ -80,3 +80,7 @@
 | 2026-09-30 | qa | M1 CLI 통합 테스트(pty 포함), 버그 없음 |
 | 2026-09-30 | orchestrator | M1 검증: fmt --check, clippy -D warnings, cargo test 전부 통과(M0 재현 테스트 포함). architect 가 platform::env 등을 ARCHITECTURE 에 반영 |
 | 2026-10-01 | orchestrator | main(708b32b) 병합: TASK.md 충돌 해소(M0 [x] 유지 + cargo init 문구 병합), coder 가 [package] name 을 prompt-hub 로 변경(bin/lib 은 ph 유지), fmt/clippy/test 통과 |
+| 2026-10-01 | architect | 깨진 파일 규칙 A안(R1~R6)을 SPEC 3.3절, ARCHITECTURE 3.4/10/11절에 반영. 부가: move_to 덮어쓰기 방지, add 의 skipped 파일명 충돌 회피 |
+| 2026-10-01 | coder | `PromptService` lookup/get(fallback)/target(엄격) 구현, cli get 경고, rm/edit 은 target 사용 |
+| 2026-10-01 | qa | 깨진 파일 회귀 테스트(`tests/broken_files_service.rs`, `tests/broken_files_cli.rs`, 핸들러 단위), 버그 없음 |
+| 2026-10-01 | orchestrator | 브랜치 fix-broken-file-scope: fmt --check, clippy -D warnings, cargo test 전부 통과, 커밋(push/PR 은 사용자 확인 대기) |
