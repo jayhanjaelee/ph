@@ -8,7 +8,8 @@
 
 - 상세 스펙: [SPEC.md](SPEC.md) — 모든 구현은 이 문서를 기준으로 한다. 스펙과 구현이 다르면 먼저 스펙 변경을 제안한다.
 - 작업 현황: [agent/TASK.md](agent/TASK.md) — 작업을 시작하거나 끝낼 때마다 갱신한다.
-- TUI 디자인: `docs/DESIGN.md` — Designer 가 작성한다 (아직 없음).
+- TUI 디자인: [docs/DESIGN.md](docs/DESIGN.md) — Designer 가 작성한다.
+- 아키텍처: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Architect 가 작성한다. 모듈 경계, 공개 API, CLI 구조, ADR.
 
 ## Multi Agent 작업 규칙
 

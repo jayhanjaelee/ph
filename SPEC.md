@@ -30,7 +30,7 @@
 ### Prompt
 | 필드 | 타입 | 설명 |
 |---|---|---|
-| `id` | String (slug) | scope 안에서 고유한 식별자. title 에서 생성하며 중복이면 suffix 를 붙인다. 파일명으로 쓰이므로 **모든 OS 에서 유효한 이름**이어야 한다 (아래 id 규칙) |
+| `id` | String (slug) | scope 안에서 고유한 식별자. title 에서 생성하며 중복이면 suffix 를 붙인다. **한 번 만들어진 id 는 title 을 수정해도 바뀌지 않는다.** 파일명으로 쓰이므로 **모든 OS 에서 유효한 이름**이어야 한다 (아래 id 규칙) |
 | `scope` | `local` \| `global` | 저장 위치. 파일에는 저장하지 않고 읽을 때 위치로 결정한다 |
 | `title` | String | 표시 이름 |
 | `body` | String | prompt 본문. `{{var}}` 형태의 변수를 허용한다 |
@@ -39,7 +39,7 @@
 | `created_at` / `updated_at` | RFC3339 | 생성 및 수정 시각 |
 
 ### id 규칙 (Windows 호환을 위해 처음부터 적용)
-- **생성 방식:** title 을 그대로 id 로 쓰되 공백(연속 공백 포함)만 `-` 하나로 바꾼다. 한글은 로마자로 바꾸지 않고 그대로 두며, 영문도 대소문자를 바꾸지 않고 그대로 둔다. 앞뒤 공백은 제거한다.
+- **생성 방식:** title 을 그대로 id 로 쓰되 공백(연속 공백 포함, 유니코드 공백 포함)만 `-` 하나로 바꾼다. 한글은 로마자로 바꾸지 않고 그대로 두며, 영문도 대소문자를 바꾸지 않고 그대로 둔다. 앞뒤 공백은 제거한다.
 
   | title | id (파일명) |
   |---|---|
@@ -47,11 +47,13 @@
   | `Code Review` | `Code-Review.md` |
   | `PR 리뷰  요청` | `PR-리뷰-요청.md` |
 
-- 금지 문자: `/ \ : * ? " < > |` 와 제어 문자. title 에 있으면 생성하지 않고 에러로 처리한다 (조용히 지우거나 바꾸지 않는다).
+- 금지 문자: `/ \ : * ? " < > |` 와 제어 문자. title 에 있으면 생성하지 않고 에러로 처리한다 (조용히 지우거나 바꾸지 않는다). 탭과 개행도 제어 문자이므로 공백으로 취급하지 않고 에러다.
+- **id 는 생성 후 고정이다.** 수정(TUI 인라인/외부 에디터, `ph edit`)에서 title 을 바꿔도 id(파일명)는 유지한다. 외부 에디터 frontmatter 에 `id` 키가 있어도 무시한다. 이름(id) 변경은 별도 동작이며 v0.1 에는 없다 (`ph move` 는 scope 이동 전용).
 - 끝이 `.` 이나 공백이면 안 된다.
 - Windows 예약 이름(`CON`, `PRN`, `AUX`, `NUL`, `COM1`~`COM9`, `LPT1`~`LPT9`)은 쓸 수 없다. 대소문자 무관.
 - id 는 **대소문자를 구분하지 않고** 중복을 검사한다 (macOS 와 Windows 는 대소문자를 구분하지 않는 파일시스템이 기본이다).
 - 유니코드(한글)는 허용하고 NFC 로 정규화해서 저장한다 (macOS 는 파일명을 NFD 로 다루는 경우가 있다).
+- 손으로 만든 파일 중 파일명(id)이 위 규칙을 어기는 것(예: 공백이 든 `my prompt.md`)은 목록에서 건너뛰고(`skipped`) 경고만 낸다. 자동으로 이름을 바꾸지 않는다.
 - 길이는 **UTF-8 기준 100바이트 이하**로 제한한다 (파일명 길이 제한은 바이트 기준이다. 한글은 글자당 3바이트).
 
 ### 변수 치환
@@ -79,7 +81,7 @@
 **읽기 (`list`, `search`, `get`)**
 - local 과 global 을 **합쳐서** 보여준다.
 - 같은 `id` 가 양쪽에 있으면 **local 이 우선**한다 (global 것은 가려진다). `list` 에서는 가려진 항목을 `shadowed` 로 표시한다.
-- `--local` 또는 `--global` 을 주면 해당 scope 만 대상으로 한다.
+- `--local` 또는 `--global` 을 주면 해당 scope 만 대상으로 한다. `--local` 인데 `.ph/` 가 없으면 읽기(`list`, `search`, `get`)에서도 `LocalNotInitialized` 에러다 (빈 결과나 NotFound 로 조용히 넘기지 않는다).
 - 모든 출력에 scope 를 표시한다 (text 는 `[L]`/`[G]` 배지, JSON 은 `"scope": "local"|"global"` 필드).
 
 **쓰기 (`add`, `edit`, `rm`, `tag`)**
@@ -88,6 +90,8 @@
 - `--local` 인데 `.ph/` 가 없으면 에러로 처리하고 `ph init` 을 안내한다. 조용히 global 에 쓰지 않는다.
 - `edit`, `rm`, `tag` 는 읽기 규칙으로 대상을 찾는다 (local 우선). 다른 scope 의 같은 id 를 다루려면 `--global` 을 명시한다.
 - `ph move <id> --to local|global` 로 scope 를 옮길 수 있다.
+
+**TUI 의 대상 scope (기본값 채택, 사용자 미확인):** TUI 의 편집, 삭제, 태그 편집은 목록에서 선택한 항목의 scope 를 그대로 대상으로 한다 (shadowed 된 global 항목을 선택하면 global 을 다룬다). 위 "local 우선" 해석은 CLI 기준이다. `PromptService` 는 scope 를 명시해 호출할 수 있어야 한다.
 
 **Agent 안전 규칙:** `ph get` 은 id 가 모호하면 (양쪽에 존재) local 을 반환하고 stderr 에 경고를 남긴다. 결과가 바뀌지 않도록 이 동작은 고정한다.
 
@@ -107,6 +111,7 @@ updated_at = "2026-09-30T12:00:00+09:00"
 ```
 
 - 쓰기는 임시 파일에 쓴 뒤 rename 하는 방식으로 atomic 하게 한다.
+- 파일이 깨져 있으면(frontmatter 오류 등) `list`/`search` 는 그 파일만 건너뛰고 stderr 로 경고하며 나머지는 정상 출력한다. 하지만 `get`/`edit`/`rm` 의 대상이 그 깨진 파일이면 NotFound 가 아니라 `InvalidFormat` 에러(원인과 위치 포함)다. 존재하는 파일을 없는 것처럼 말하지 않기 위해서다.
 - 저장소 접근은 `Storage` trait 로 추상화한다. 테스트에서는 in-memory 구현을 쓴다.
 - `PromptService` 는 scope 별 `Storage` 인스턴스(global 필수, local 선택)를 가지며, 3.2절의 병합, 우선순위, 쓰기 대상 결정을 **core 안에서** 처리한다. cli 와 tui 는 이 규칙을 다시 구현하지 않는다.
 
@@ -139,14 +144,14 @@ ph skill install [--dir <path>]   # Claude skill 파일 설치 (7절 참고)
 ## 5. TUI 명세
 
 - 구성: 좌측 **목록/검색**, 우측 **미리보기**, 하단 **상태바 및 키 도움말**.
-- 모드: Normal / Search / Edit / Confirm.
+- 모드: Normal / Search / Edit / Confirm, 그리고 TagInput / Help / Notice / Preview (기본값 채택, 사용자 미확인). 세부는 `docs/DESIGN.md` 1절.
 - 기본 키(초안, Designer 가 확정한다):
 
 | 키 | 동작 |
 |---|---|
 | `j`/`k`, `↑`/`↓` | 이동 |
 | `/` | 검색 |
-| `Enter` | 선택한 prompt 를 클립보드로 복사 |
+| `Enter` | 선택한 prompt 의 **본문 원문**을 클립보드로 복사한다 (변수 미치환). 본문에 미치환 `{{var}}` 가 있으면 상태바에 개수를 안내한다 |
 | `s` | scope 필터 순환 (all → local → global) |
 | `a` | 새 prompt 추가 (저장 scope 선택, 기본값은 3.2절 규칙) |
 | `e` | TUI 내 편집 (인라인 에디터) |
@@ -154,7 +159,7 @@ ph skill install [--dir <path>]   # Claude skill 파일 설치 (7절 참고)
 | `d` | 삭제 (확인 필요) |
 | `t` | 태그 편집 |
 | `?` | 도움말 |
-| `q` / `Esc` | 종료 / 뒤로 |
+| `q` / `Esc` | 종료. 둘 다 Normal 에서 앱을 종료한다. 팝업, 검색, 편집, 미리보기 모드 안에서 `Esc` 는 그 모드를 닫는다 (편집은 변경 확인 후) |
 
 - 프레임워크는 **ratatui** (+ crossterm backend) 를 사용한다. 화면은 ratatui 의 `Layout`, `Block`, `List`, `Paragraph`, `Table` 등 내장 위젯으로 구성하고, 필요할 때만 `Widget` trait 로 커스텀 위젯을 만든다.
 - 입력 처리는 crossterm 이벤트 루프로 하고, 터미널 초기화와 복구(raw mode, alternate screen)는 panic 시에도 복원되도록 hook 을 건다.
@@ -170,7 +175,7 @@ ph skill install [--dir <path>]   # Claude skill 파일 설치 (7절 참고)
 - 본문은 여러 줄 편집, 커서 이동, 선택, 삭제, undo/redo, 줄바꿈을 지원한다. 한글 등 wide 문자의 폭을 올바르게 계산해야 한다.
 - 저장 `Ctrl+S`, 취소 `Esc`. 변경 사항이 있는 채로 `Esc` 를 누르면 저장 확인을 묻는다.
 - 새 prompt 추가(`a`)도 같은 인라인 에디터를 쓴다. 저장 scope 는 여기서 선택한다 (기본값은 3.2절).
-- 구현은 `tui-textarea` 같은 ratatui 호환 crate 사용을 우선 검토한다. 채택은 Architect 가 검증해 결정한다.
+- 구현은 `ratatui-textarea` 를 쓴다 (Architect 검증 결과, `docs/ARCHITECTURE.md` 6절).
 
 **외부 에디터**
 - TUI 를 잠시 중단하고(raw mode 와 alternate screen 해제) 에디터를 실행한 뒤, 종료되면 화면을 복구하고 다시 로드한다. CLI 의 `ph edit` 과 같은 `platform::editor` 를 공유한다.
@@ -180,7 +185,7 @@ ph skill install [--dir <path>]   # Claude skill 파일 설치 (7절 참고)
 
 **공통**
 - 두 방식 모두 저장은 `PromptService` 를 통해서만 한다. 검증 규칙(id, frontmatter)과 atomic write 는 동일하게 적용된다.
-- 저장 시 `updated_at` 을 갱신한다.
+- 저장 시 `updated_at` 을 갱신한다. title 을 바꿔도 id(파일명)는 유지하고, 외부 에디터 frontmatter 의 `id` 키는 무시한다 (2절).
 
 ### 5.2 화면 표시
 
@@ -222,7 +227,7 @@ tests/              # 통합 테스트 (CLI 대상)
 4. 외부 프로그램 실행(`$EDITOR`)은 `platform::editor` 로 감싼다. 셸 문자열 결합 대신 program 과 args 를 분리해 실행한다.
 5. 파일 읽기는 CRLF 와 UTF-8 BOM 을 허용한다. 쓸 때는 LF 로 통일한다. frontmatter 파서는 둘 다 처리해야 한다.
 6. 파일 잠금이나 권한(chmod) 같은 Unix 전용 개념에 의존하지 않는다. 필요하면 `platform` 에 trait 로 추상화한다.
-7. 환경변수는 `PH_HOME`, `EDITOR`, `VISUAL` 만 읽는다. Unix 전용 변수(`XDG_*`, `HOME`)는 `platform::paths` 안에서만 읽는다.
+7. 환경변수는 `PH_HOME`, `EDITOR`, `VISUAL`, `COLORTERM`, `NO_COLOR` 만 읽는다. Unix 전용 변수(`XDG_*`, `HOME`)는 `platform::paths` 안에서만 읽는다. `COLORTERM`/`NO_COLOR` 는 `platform` 에서만 읽어 `ColorMode` 로 tui 에 전달한다 (tui 는 환경을 직접 읽지 않는다).
 8. 통합 테스트는 경로 구분자나 개행에 의존하는 assert 를 쓰지 않는다.
 9. CI 에서 지금은 Linux 와 macOS 를 돌리고, Windows 는 `cargo check --target x86_64-pc-windows-msvc` 로 **컴파일이 깨지지 않는지만** 확인한다 (M0 이후 추가).
 
@@ -234,9 +239,9 @@ tests/              # 통합 테스트 (CLI 대상)
 | TUI (확정) | `ratatui`, `crossterm` |
 | CLI 파싱 | `clap` (derive) |
 | 직렬화 | `serde`, `serde_json`, `toml` |
-| 에러 | `thiserror` (라이브러리), `anyhow` (main) |
+| 에러 | `thiserror` (`PhError`. `anyhow` 는 쓰지 않는다) |
 | 시간 | `time` 또는 `chrono` |
-| 인라인 텍스트 편집 | `tui-textarea` (검토 후보) |
+| 인라인 텍스트 편집 | `ratatui-textarea` (확정. `tui-textarea` 는 ratatui 0.29 에 묶여 제외) |
 | 플랫폼 경로 | `directories` |
 | 클립보드 | `arboard` (실패 시 에러 표시만, 대체 동작 없음) |
 
